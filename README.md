@@ -120,6 +120,10 @@ maintenance mode off again, even if a step fails.
 - Online document editing (Collabora / OnlyOffice) is not included. It needs
   several more GB of RAM than a 4 GB Pi comfortably has.
 
+## See also
+
+[ver.2 (pi-private-cloud-ver.2)](https://github.com/ahsan217-beep/pi-private-cloud-ver.2) sets up the same private cloud on a Raspberry Pi 5 booting from NVMe, using the Nextcloud Snap and two interactive scripts instead of Docker Compose. Its README has a side-by-side comparison of both versions.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
