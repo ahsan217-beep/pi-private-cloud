@@ -1,0 +1,101 @@
+# pi-private-cloud: Nextcloud on a Raspberry Pi, reachable only over Tailscale.
+#
+#   tailscale  joins your tailnet and terminates HTTPS (valid *.ts.net cert)
+#   app        Nextcloud (Apache), shares the tailscale container's network
+#   cron       runs Nextcloud background jobs every 5 minutes
+#   db         PostgreSQL
+#   redis      file-locking and memory cache
+#
+# No ports are published on the Pi or forwarded on the router.
+
+name: pi-private-cloud
+
+x-nextcloud-volumes: &nextcloud-volumes
+  - ${STORAGE_ROOT:?set STORAGE_ROOT in .env}/html:/var/www/html
+  - ${STORAGE_ROOT:?set STORAGE_ROOT in .env}/data:/var/www/html/data
+
+services:
+  tailscale:
+    image: tailscale/tailscale:stable
+    hostname: ${TS_HOSTNAME:-pi-cloud}
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?set TS_AUTHKEY in .env}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_USERSPACE: "false"
+    volumes:
+      - ./tailscale-state:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - backend
+    restart: unless-stopped
+
+  app:
+    image: nextcloud:35-apache
+    # Share the tailscale container's network namespace: Nextcloud listens on
+    # 127.0.0.1:80 inside it, and `tailscale serve` proxies HTTPS to it.
+    network_mode: service:tailscale
+    depends_on:
+      tailscale:
+        condition: service_started
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      REDIS_HOST: redis
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:-admin}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?set NEXTCLOUD_ADMIN_PASSWORD in .env}
+      NEXTCLOUD_TRUSTED_DOMAINS: ${TS_HOSTNAME:-pi-cloud}.${TS_TAILNET:?set TS_TAILNET in .env}
+      OVERWRITEPROTOCOL: https
+      OVERWRITEHOST: ${TS_HOSTNAME:-pi-cloud}.${TS_TAILNET:?set TS_TAILNET in .env}
+      TRUSTED_PROXIES: 127.0.0.1
+      # 512M per PHP process is a sensible ceiling on a 4-8 GB Pi.
+      PHP_MEMORY_LIMIT: 512M
+      PHP_UPLOAD_LIMIT: 16G
+    volumes: *nextcloud-volumes
+    restart: unless-stopped
+
+  cron:
+    image: nextcloud:35-apache
+    entrypoint: /cron.sh
+    depends_on:
+      - app
+    volumes: *nextcloud-volumes
+    networks:
+      - backend
+    restart: unless-stopped
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - ${STORAGE_ROOT:?set STORAGE_ROOT in .env}/db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nextcloud -d nextcloud"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backend
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - backend
+    restart: unless-stopped
+
+networks:
+  backend:
